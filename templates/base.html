@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Bolt Action World Rankings{% endblock %}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; margin: 0; background: #1a1a2e; color: #e0e0e0; }
+    nav { background: #16213e; padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 1.5rem; }
+    nav a { color: #e0e0e0; text-decoration: none; font-weight: bold; }
+    nav a:hover { color: #f0a500; }
+    nav .brand { font-size: 1.2rem; color: #f0a500; margin-right: auto; }
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; }
+    h1, h2 { color: #f0a500; }
+    table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+    th { background: #16213e; color: #f0a500; padding: 0.5rem 0.75rem; text-align: left; }
+    td { padding: 0.4rem 0.75rem; border-bottom: 1px solid #2a2a4a; }
+    tr:hover td { background: #1f1f3a; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
+             font-size: 0.75rem; background: #2a2a4a; }
+    .badge.wtc  { background: #0d3b66; }
+    .badge.wow  { background: #3b1f00; color: #f0a500; }
+    .flash { padding: 0.75rem 1rem; margin-bottom: 1rem; background: #2a3a1a; border-left: 4px solid #5a9a3a; }
+    .flash.error { background: #3a1a1a; border-color: #9a3a3a; }
+    a.btn { display: inline-block; padding: 0.4rem 1rem; background: #f0a500;
+            color: #1a1a2e; border-radius: 4px; text-decoration: none; font-weight: bold; }
+    a.btn:hover { background: #d09000; }
+    .provisional { opacity: 0.65; }
+  </style>
+</head>
+<body>
+<nav>
+  <span class="brand">&#9654; BA World Rankings</span>
+  <a href="{{ url_for('index') }}">Home</a>
+  <a href="{{ url_for('world_rankings') }}">World Rankings</a>
+  {% if session.get('logged_in') %}
+    <a href="{{ url_for('admin') }}">Admin</a>
+    <a href="{{ url_for('logout') }}">Logout</a>
+  {% endif %}
+</nav>
+<main>
+  {% with messages = get_flashed_messages() %}
+    {% for msg in messages %}
+      <div class="flash">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

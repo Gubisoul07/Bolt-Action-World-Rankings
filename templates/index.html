@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}Home — BA World Rankings{% endblock %}
+{% block content %}
+<h1>Bolt Action World Rankings</h1>
+<p>Cross-tournament individual performance tracking for Bolt Action team competitions.
+   Only events with full round-by-round pairings count toward ratings.</p>
+
+<p>{{ competitor_count }} players tracked &nbsp;|&nbsp;
+   <a class="btn" href="{{ url_for('world_rankings') }}">View Rankings</a></p>
+
+<h2>Imported Events</h2>
+{% if editions %}
+<table>
+  <tr><th>Year</th><th>Tournament</th><th>Event</th><th>Rated</th><th>Players</th><th>Games</th></tr>
+  {% for e in editions %}
+  <tr>
+    <td>{{ e.year }}</td>
+    <td><span class="badge {{ e.source }}">{{ e.source | upper }}</span></td>
+    <td>{{ e.name }}</td>
+    <td>{% if e.match_data_available %}&#9989;{% else %}<span title="Summary-only — excluded from ratings">&#9940; history only</span>{% endif %}</td>
+    <td>{{ e.player_count }}</td>
+    <td>{{ e.game_count }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No events imported yet. <a href="{{ url_for('login') }}">Log in</a> to import WTC data.</p>
+{% endif %}
+{% endblock %}

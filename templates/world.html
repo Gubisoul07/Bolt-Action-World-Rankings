@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% block title %}World Rankings{% endblock %}
+{% block content %}
+<h1>World Rankings</h1>
+
+<form method="get" style="margin-bottom:1.5rem; display:flex; gap:1rem; flex-wrap:wrap; align-items:center;">
+  <div>
+    <strong>Model:</strong>
+    {% for m, label in [('iterative','Iterative SoS'), ('onedeep','One-deep SoS'), ('elo','Sequential Elo')] %}
+      <label style="margin-left:0.5rem;">
+        <input type="radio" name="model" value="{{ m }}" {% if model == m %}checked{% endif %}>
+        {{ label }}
+      </label>
+    {% endfor %}
+  </div>
+  {% if available_sources %}
+  <div>
+    <strong>Tournament:</strong>
+    {% for src in available_sources %}
+      <label style="margin-left:0.5rem;">
+        <input type="checkbox" name="source" value="{{ src }}"
+               {% if not sources or src in sources %}checked{% endif %}>
+        <span class="badge {{ src }}">{{ src | upper }}</span>
+      </label>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Apply</button>
+</form>
+
+{% macro rating_table(rows, provisional=false) %}
+<table class="{% if provisional %}provisional{% endif %}">
+  <tr>
+    <th>#</th><th>Player</th><th>Events</th>
+    <th title="Rating (Elo-like, centred on 1000)">Rating</th>
+    <th title="Win-equivalent rate: (W + 0.5·D) / games">Point%</th>
+    {% if model != 'elo' %}<th title="Strength of Schedule">SoS</th>{% endif %}
+    <th>W</th><th>D</th><th>L</th><th>Games</th>
+  </tr>
+  {% for row in rows %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ row.name }}</td>
+    <td>
+      {% for e in row.editions %}
+        <span class="badge {{ e.source }}">{{ e.source | upper }} {{ e.year }}</span>
+      {% endfor %}
+    </td>
+    <td><strong>{{ row.rating }}</strong></td>
+    <td>{{ row.point_pct }}%</td>
+    {% if model != 'elo' %}<td>{{ row.sos }}</td>{% endif %}
+    <td>{{ row.wins }}</td>
+    <td>{{ row.draws }}</td>
+    <td>{{ row.losses }}</td>
+    <td>{{ row.played }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endmacro %}
+
+{% if qualified %}
+  <h2>Qualified ({{ qualified | length }})</h2>
+  <p style="color:#aaa; font-size:0.9rem;">Minimum {{ min_games }} games or {{ min_editions }} rated events.</p>
+  {{ rating_table(qualified) }}
+{% endif %}
+
+{% if provisional %}
+  <h2>Provisional ({{ provisional | length }})</h2>
+  <p style="color:#aaa; font-size:0.9rem;">Below the qualification threshold — rankings are unreliable with small samples.</p>
+  {{ rating_table(provisional, provisional=true) }}
+{% endif %}
+
+{% if not qualified and not provisional %}
+  <p>No data yet. Import a WTC event from the <a href="{{ url_for('admin') }}">admin page</a>.</p>
+{% endif %}
+
+<details style="margin-top:2rem; color:#aaa; font-size:0.85rem;">
+  <summary>How ratings are calculated</summary>
+  <p><strong>Iterative SoS (default):</strong> r = (W + 0.5·D) / games.
+     SoS = mean of opponents' adjusted rate, iterated to convergence.
+     Rating = 1000 + 1000·(r + SoS_adjustment − 0.5).</p>
+  <p><strong>One-deep SoS:</strong> same formula but SoS uses raw rates (single pass).</p>
+  <p><strong>Sequential Elo:</strong> games processed in chronological order (year → round),
+     K={{ 32 }}. SoS not shown.</p>
+  <p>Only events with full round-by-round pairings are rated.
+     Summary-only events appear in the historical record on the home page.</p>
+</details>
+{% endblock %}

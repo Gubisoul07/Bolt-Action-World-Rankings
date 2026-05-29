@@ -1,0 +1,42 @@
+{% extends 'base.html' %}
+{% block title %}Unmatched Players — Admin{% endblock %}
+{% block content %}
+<h1>Unmatched Source Competitors</h1>
+<p style="color:#aaa;">These players have been imported but not yet linked to a global competitor identity.
+   Either link them to an existing competitor or create a new one.</p>
+
+{% if unmatched %}
+{% for sc in unmatched %}
+<div style="background:#16213e; padding:1rem; margin-bottom:1rem; border-radius:6px; border-left:4px solid #f0a500;">
+  <strong>{{ sc.name }}</strong>
+  <span class="badge {{ sc.source }}">{{ sc.source | upper }}</span>
+  <span style="color:#aaa; font-size:0.85rem;">key: {{ sc.source_key }}</span>
+
+  <form method="post" action="{{ url_for('admin_link') }}" style="margin-top:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+    <input type="hidden" name="sc_id" value="{{ sc.id }}">
+
+    <select name="competitor_id" style="padding:0.3rem; background:#1a1a2e; color:#e0e0e0; border:1px solid #2a2a4a; border-radius:4px;">
+      {% for comp in all_competitors %}
+        <option value="{{ comp.id }}">{{ comp.display_name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" name="action" value="link"
+            style="padding:0.3rem 0.75rem; background:#0d6efd; color:#fff; border:none; border-radius:4px; cursor:pointer;">
+      Link to existing
+    </button>
+
+    <span style="color:#aaa;">or</span>
+    <input type="text" name="new_name" placeholder="New competitor name"
+           style="padding:0.3rem; background:#1a1a2e; color:#e0e0e0; border:1px solid #2a2a4a; border-radius:4px; width:200px;">
+    <button type="submit" name="action" value="new"
+            style="padding:0.3rem 0.75rem; background:#198754; color:#fff; border:none; border-radius:4px; cursor:pointer;">
+      Create new
+    </button>
+  </form>
+</div>
+{% endfor %}
+{% else %}
+<p>&#9989; All source competitors are linked.</p>
+{% endif %}
+<p><a href="{{ url_for('admin') }}">&larr; Back to Admin</a></p>
+{% endblock %}

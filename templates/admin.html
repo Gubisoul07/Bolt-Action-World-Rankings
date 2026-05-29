@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block title %}Admin — BA World Rankings{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+
+<p>{{ competitor_count }} competitors tracked.
+   {% if unmatched_count %}
+     <a href="{{ url_for('admin_unmatched') }}" style="color:#f0a500;">
+       &#9888; {{ unmatched_count }} unmatched source competitors
+     </a>
+   {% endif %}
+</p>
+
+<h2>Import WTC Data</h2>
+<form method="post" action="{{ url_for('admin_import_wtc') }}">
+  <input type="url" name="url" value="https://scoring.hala.dk/api/export.json"
+         style="width:400px; padding:0.4rem; background:#16213e; color:#e0e0e0; border:1px solid #2a2a4a; border-radius:4px;">
+  <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer; margin-left:0.5rem;">
+    Import from WTC
+  </button>
+</form>
+<p style="color:#aaa; font-size:0.85rem;">Fetches the live export from scoring.hala.dk and upserts all editions.
+   Safe to run multiple times — existing records are updated, not duplicated.</p>
+
+<h2>Imported Events</h2>
+{% if editions %}
+<table>
+  <tr><th>Source</th><th>Year</th><th>Name</th><th>Rated</th><th>Games</th><th>Imported</th></tr>
+  {% for e in editions %}
+  <tr>
+    <td><span class="badge {{ e.source }}">{{ e.source | upper }}</span></td>
+    <td>{{ e.year }}</td>
+    <td>{{ e.name }}</td>
+    <td>{% if e.match_data_available %}&#9989;{% else %}&#9940; history only{% endif %}</td>
+    <td>{{ e.game_count }}</td>
+    <td>{{ e.imported_at }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p>No events imported yet.</p>
+{% endif %}
+{% endblock %}
