@@ -439,6 +439,28 @@ def admin_import_wtc():
 
 
 # ---------------------------------------------------------------------------
+# Admin: WoW import
+# ---------------------------------------------------------------------------
+
+@app.route('/admin/import/wow/<int:year>', methods=['POST'])
+@require_admin
+def admin_import_wow(year):
+    if year not in (2024, 2025):
+        flash(f'Unknown WoW year: {year}')
+        return redirect(url_for('admin'))
+    from importer_wow import import_wow
+    try:
+        stats = import_wow(year)
+    except Exception as e:
+        flash(f'WoW {year} import failed: {e}')
+        return redirect(url_for('admin'))
+    flash(f"WoW {year} import done — {stats['editions']} edition(s), "
+          f"{stats['players']} players, {stats['games']} games, "
+          f"{stats['new_competitors']} new competitors.")
+    return redirect(url_for('admin'))
+
+
+# ---------------------------------------------------------------------------
 # Admin: identity matching
 # ---------------------------------------------------------------------------
 
