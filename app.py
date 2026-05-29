@@ -230,14 +230,20 @@ def world_rankings():
     c.execute('SELECT id, display_name FROM competitor')
     competitors = {row['id']: row['display_name'] for row in c.fetchall()}
 
-    c.execute('''SELECT sc.competitor_id, se.source, se.year, se.name as edition_name
-                 FROM source_competitor sc
-                 JOIN source_edition se ON se.source = sc.source
-                 WHERE sc.competitor_id IS NOT NULL''')
-    # Build per-competitor edition list (all editions, not just rated).
+    # Build per-competitor edition list from actual games played.
+    # Using games (not source_competitor→source_edition join) avoids showing
+    # every edition of a source to players who only played in one of them.
+    c.execute(q(f'''SELECT DISTINCT g.competitor_a as cid, se.source, se.year, se.name as edition_name
+                    FROM game g JOIN source_edition se ON se.id = g.source_edition_id
+                    WHERE g.source_edition_id IN ({placeholders})
+                    UNION
+                    SELECT DISTINCT g.competitor_b, se.source, se.year, se.name
+                    FROM game g JOIN source_edition se ON se.id = g.source_edition_id
+                    WHERE g.source_edition_id IN ({placeholders})'''),
+              rated_ids + rated_ids)
     comp_editions = {}
     for row in c.fetchall():
-        cid = row['competitor_id']
+        cid = row['cid']
         comp_editions.setdefault(cid, [])
         entry = {'source': row['source'], 'year': row['year'], 'name': row['edition_name']}
         if entry not in comp_editions[cid]:
