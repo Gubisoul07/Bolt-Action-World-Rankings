@@ -1,0 +1,62 @@
+{% extends 'base.html' %}
+{% block title %}WoW Player Links — Admin{% endblock %}
+{% block content %}
+<h1>WoW Player Links</h1>
+<p style="color:#aaa;">
+  These WoW players are not yet linked to a WTC identity.
+  For each player, either link them to the correct WTC competitor (so their results merge on the world rankings)
+  or keep them as a WoW-only entry.
+</p>
+
+{% if wow_players %}
+<p style="color:#aaa; font-size:0.9rem;">
+  {{ wow_players | length }} player(s) remaining.
+  WTC names are shown <strong style="color:#f0a500;">highlighted</strong> in the dropdown.
+</p>
+
+{% for sc in wow_players %}
+<div style="background:#16213e; padding:0.9rem 1rem; margin-bottom:0.75rem; border-radius:6px; border-left:4px solid #3b8fcc;">
+  <strong style="font-size:1.05rem;">{{ sc.name }}</strong>
+  <span style="color:#aaa; font-size:0.82rem; margin-left:0.5rem;">
+    WoW · current entry: <em>{{ sc.display_name }}</em>
+  </span>
+
+  <form method="post" action="{{ url_for('admin_wow_merge') }}"
+        style="margin-top:0.6rem; display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">
+    <input type="hidden" name="sc_id" value="{{ sc.id }}">
+
+    <select name="competitor_id"
+            style="flex:1; min-width:260px; padding:0.35rem; background:#1a1a2e;
+                   color:#e0e0e0; border:1px solid #2a2a4a; border-radius:4px;">
+      <optgroup label="WTC players (full names)">
+        {% for comp in all_competitors if comp.has_wtc %}
+          <option value="{{ comp.id }}">{{ comp.display_name }}</option>
+        {% endfor %}
+      </optgroup>
+      <optgroup label="WoW-only">
+        {% for comp in all_competitors if not comp.has_wtc %}
+          <option value="{{ comp.id }}">{{ comp.display_name }}</option>
+        {% endfor %}
+      </optgroup>
+    </select>
+
+    <button type="submit" name="action" value="link"
+            style="padding:0.35rem 0.9rem; background:#0d6efd; color:#fff;
+                   border:none; border-radius:4px; cursor:pointer; font-weight:bold;">
+      Link
+    </button>
+    <button type="submit" name="action" value="keep"
+            style="padding:0.35rem 0.9rem; background:#444; color:#ccc;
+                   border:none; border-radius:4px; cursor:pointer;">
+      Keep WoW-only
+    </button>
+  </form>
+</div>
+{% endfor %}
+
+{% else %}
+<p>&#9989; All WoW players are linked to a competitor identity.</p>
+{% endif %}
+
+<p style="margin-top:1.5rem;"><a href="{{ url_for('admin') }}">&larr; Back to Admin</a></p>
+{% endblock %}

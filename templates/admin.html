@@ -4,11 +4,11 @@
 <h1>Admin</h1>
 
 <p>{{ competitor_count }} competitors tracked.
-   {% if unmatched_count %}
-     <a href="{{ url_for('admin_unmatched') }}" style="color:#f0a500;">
-       &#9888; {{ unmatched_count }} unmatched source competitors
-     </a>
-   {% endif %}
+   <a href="{{ url_for('admin_unmatched') }}" style="color:#f0a500;">
+     {% if unmatched_count %}&#9888; {{ unmatched_count }} unmatched{% else %}Unmatched players{% endif %}
+   </a>
+   &nbsp;|&nbsp;
+   <a href="{{ url_for('admin_wow_players') }}" style="color:#3b8fcc;">WoW player links</a>
 </p>
 
 <h2>Import WTC Data</h2>

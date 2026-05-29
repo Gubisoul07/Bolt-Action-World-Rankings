@@ -487,6 +487,65 @@ def admin_unmatched():
                            unmatched=unmatched, all_competitors=all_competitors)
 
 
+@app.route('/admin/wow_players')
+@require_admin
+def admin_wow_players():
+    conn = get_db()
+    c = get_cursor(conn)
+    # WoW source_competitors whose linked competitor has no WTC source_competitor
+    c.execute(q('''SELECT sc.id, sc.source_key, sc.name, sc.competitor_id, comp.display_name
+                   FROM source_competitor sc
+                   JOIN competitor comp ON comp.id = sc.competitor_id
+                   WHERE sc.source = 'wow'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM source_competitor sc2
+                       WHERE sc2.competitor_id = sc.competitor_id AND sc2.source = 'wtc'
+                   )
+                   ORDER BY sc.name'''))
+    wow_players = c.fetchall()
+    # All competitors for the dropdown, flagging WTC-linked ones
+    c.execute(q('''SELECT c.id, c.display_name,
+                          (SELECT COUNT(*) FROM source_competitor sc
+                           WHERE sc.competitor_id = c.id AND sc.source = 'wtc') as has_wtc
+                   FROM competitor c
+                   ORDER BY c.display_name'''))
+    all_competitors = c.fetchall()
+    conn.close()
+    return render_template('admin_wow_players.html',
+                           wow_players=wow_players, all_competitors=all_competitors)
+
+
+@app.route('/admin/wow_merge', methods=['POST'])
+@require_admin
+def admin_wow_merge():
+    sc_id      = int(request.form['sc_id'])
+    action     = request.form['action']  # 'link' | 'keep'
+    conn = get_db()
+    c = get_cursor(conn)
+
+    if action == 'keep':
+        flash('Kept as WoW-only competitor.')
+        conn.close()
+        return redirect(url_for('admin_wow_players'))
+
+    target_comp_id = int(request.form['competitor_id'])
+    c.execute(q('SELECT competitor_id FROM source_competitor WHERE id=?'), (sc_id,))
+    old_cid = c.fetchone()['competitor_id']
+
+    if old_cid != target_comp_id:
+        c.execute(q('UPDATE source_competitor SET competitor_id=? WHERE id=?'), (target_comp_id, sc_id))
+        # If old auto-competitor is now orphaned, retarget its games and delete it
+        c.execute(q('SELECT COUNT(*) as cnt FROM source_competitor WHERE competitor_id=?'), (old_cid,))
+        if c.fetchone()['cnt'] == 0:
+            c.execute(q('UPDATE game SET competitor_a=? WHERE competitor_a=?'), (target_comp_id, old_cid))
+            c.execute(q('UPDATE game SET competitor_b=? WHERE competitor_b=?'), (target_comp_id, old_cid))
+            c.execute(q('DELETE FROM competitor WHERE id=?'), (old_cid,))
+        conn.commit()
+    conn.close()
+    flash('Linked.')
+    return redirect(url_for('admin_wow_players'))
+
+
 @app.route('/admin/link', methods=['POST'])
 @require_admin
 def admin_link():
