@@ -124,6 +124,7 @@ def _extract_games(ws, fixed_round=None):
     games = []
     current_round = fixed_round or 0
     counters = {}  # synthetic board-number counters, keyed by round_no
+    seen_group_a = False  # tracks whether Group A header appeared for current round
 
     for row in ws.iter_rows(values_only=True):
         # Detect round-header rows only when round is not fixed.
@@ -131,6 +132,15 @@ def _extract_games(ws, fixed_round=None):
             detected = _detect_round(row)
             if detected:
                 current_round = detected
+                seen_group_a = False
+                continue
+            # Some sheets omit the "Round N" header before the last round(s).
+            # A second "Group A" occurrence signals an implicit round boundary.
+            first_cell = str(row[0] or '').strip().lower()
+            if first_cell == 'group a' and current_round > 0:
+                if seen_group_a:
+                    current_round += 1
+                seen_group_a = True
                 continue
 
         if current_round == 0:

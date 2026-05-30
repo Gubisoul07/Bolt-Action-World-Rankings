@@ -368,7 +368,7 @@ def _compute_elo(games, competitors, comp_editions, wdl, dk, edition_set, K=32):
     for cid in wdl:
         elo[cid] = 1000.0
 
-    for g in sorted(games, key=lambda x: (x['year'], x['round_order'])):
+    for g in sorted(games, key=lambda x: (x['year'], x['source_edition_id'], x['round_order'])):
         a, b = g['competitor_a'], g['competitor_b']
         ra, rb = elo.get(a, 1000.0), elo.get(b, 1000.0)
         ea = 1 / (1 + 10 ** ((rb - ra) / 400))
