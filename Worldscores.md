@@ -196,7 +196,7 @@ The **only** change that lands in the scoring repo. Read-only, public (standings
 | **1** | rankings repo | ✅ Done | Flask skeleton + Postgres schema (`competitor`, `source_competitor`, `source_edition`, `game`). |
 | **2** | rankings repo | ✅ Done | WTC importer (`importer_wtc.py`) — pulls `export.json` → upserts `game` rows, carries WTC `person_id` as `source_key`. |
 | **3** | rankings repo | ✅ Done | Rating engine (3 models) + `/world` page with model toggle + tournament filter. |
-| **4** | rankings repo | ✅ Done | WoW importer (`importer_wow.py`, WoW 2024 + 2025 from Excel) + cross-source identity review (`/admin/wow_players`). |
+| **4** | rankings repo | ✅ Done | WoW importer (`importer_wow.py`, WoW 2024–2026 from Excel) + cross-source identity review (`/admin/wow_players`). |
 | **5** | VPS | ⏳ To do | Deploy to `rankings.hala.dk` (see below). |
 
 Repo: **https://github.com/Gubisoul07/Bolt-Action-World-Rankings**
