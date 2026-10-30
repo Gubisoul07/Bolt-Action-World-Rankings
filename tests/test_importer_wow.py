@@ -42,6 +42,14 @@ class ExtractGamesTest(unittest.TestCase):
             (2, 7, 'Cy', 'Bo', 'L', 'Wales', 'England'),
         ])
 
+    def test_header_with_table_number_instead_of_label(self):
+        # WoW 2026 Round 1 has '19' typed over the 'Table' header cell.
+        row = header('Mixed Nuts', 'Spain 2')
+        row[0] = 19
+        ws = sheet([row, [20, 'Bo', None, 'Granicus', None, None, 3, 0]])
+        games = importer_wow._extract_games(ws, fixed_round=1)
+        self.assertEqual(games, [(1, 20, 'Bo', 'Granicus', 'W', 'Mixed Nuts', 'Spain 2')])
+
 
 class PlayerKeysTest(unittest.TestCase):
     def test_name_playing_twice_in_a_round_is_split_by_team(self):

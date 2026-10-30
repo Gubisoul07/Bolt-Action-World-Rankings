@@ -4,6 +4,8 @@ the rankings DB.
 Supported editions are listed in WOW_EDITIONS:
   2024 — Data/WOW 2024 data.xlsx  (all rounds on a single 'All results' sheet)
   2025 — Data/WOW 2025 results.xlsx  (one 'Round N' sheet per round)
+  2026 — Data/WOW 2026 results.xlsx  (one 'Round N' sheet per round; only the
+         Round sheets are kept — the organiser's file has contact details)
 
 Called by app.py's /admin/import/wow/<year> route; can also be run standalone:
   python importer_wow.py 2024
@@ -24,6 +26,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), 'Data')
 WOW_EDITIONS = {
     2024: ('WOW 2024 data.xlsx', 'single'),
     2025: ('WOW 2025 results.xlsx', 'per_round'),
+    2026: ('WOW 2026 results.xlsx', 'per_round'),
 }
 
 # Column offsets for each group block (up to 4 groups side-by-side, 10 cols each).
@@ -102,11 +105,14 @@ def _is_player_row(row, offset):
 
 
 def _team_header(row, offset):
-    """Return (team_a, team_b) if this row is a 'Table | Team A | Army | Team B'
-    header at the given offset, else None."""
-    if len(row) <= offset + 3:
+    """Return (team_a, team_b) if this row is a 'Table | Team A | Army | Team B |
+    Army | Roll off winner…' header at the given offset, else None.  The
+    'Table' cell is sometimes overwritten with a table number, so the roll-off
+    column is accepted as a marker too."""
+    if len(row) <= offset + 5:
         return None
-    if str(row[offset] or '').strip().lower() != 'table':
+    if (str(row[offset] or '').strip().lower() != 'table'
+            and not str(row[offset + 5] or '').strip().lower().startswith('roll off')):
         return None
     return (str(row[offset + 1] or '').strip() or None,
             str(row[offset + 3] or '').strip() or None)
