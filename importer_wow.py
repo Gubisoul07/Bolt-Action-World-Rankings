@@ -1,7 +1,7 @@
 """WoW importer — reads Excel files from the Data/ folder and upserts into
 the rankings DB.
 
-Supported editions:
+Supported editions are listed in WOW_EDITIONS:
   2024 — Data/WOW 2024 data.xlsx  (all rounds on a single 'All results' sheet)
   2025 — Data/WOW 2025 results.xlsx  (one 'Round N' sheet per round)
 
@@ -15,9 +15,16 @@ import sys
 
 import openpyxl
 
-from app import get_db, get_cursor, insert_returning_id, q
+from db import get_db, get_cursor, init_db, insert_returning_id, q
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'Data')
+
+# year → (file name in Data/, layout).  Layout 'single' = every round on the
+# 'All results' sheet; 'per_round' = one 'Round N' sheet per round.
+WOW_EDITIONS = {
+    2024: ('WOW 2024 data.xlsx', 'single'),
+    2025: ('WOW 2025 results.xlsx', 'per_round'),
+}
 
 # Column offsets for each group block (up to 4 groups side-by-side, 10 cols each).
 _GROUP_OFFSETS = [0, 10, 20, 30]
@@ -94,6 +101,17 @@ def _is_player_row(row, offset):
     return True
 
 
+def _team_header(row, offset):
+    """Return (team_a, team_b) if this row is a 'Table | Team A | Army | Team B'
+    header at the given offset, else None."""
+    if len(row) <= offset + 3:
+        return None
+    if str(row[offset] or '').strip().lower() != 'table':
+        return None
+    return (str(row[offset + 1] or '').strip() or None,
+            str(row[offset + 3] or '').strip() or None)
+
+
 def _table_to_board(table_cell, counters, round_no):
     """Convert a table cell (letter, number, or None) to an integer board number.
 
@@ -115,7 +133,8 @@ def _table_to_board(table_cell, counters, round_no):
 
 
 def _extract_games(ws, fixed_round=None):
-    """Yield (round_no, board_number, name_a, name_b, outcome) from a worksheet.
+    """Return [(round_no, board_number, name_a, name_b, outcome, team_a, team_b)]
+    from a worksheet.
 
     fixed_round — pass an int when the round number is known from the sheet
                   name (2025 format).  Pass None to detect it from row headers
@@ -124,6 +143,7 @@ def _extract_games(ws, fixed_round=None):
     games = []
     current_round = fixed_round or 0
     counters = {}  # synthetic board-number counters, keyed by round_no
+    teams = {}     # offset → (team_a, team_b) from the latest 'Table' header row
     seen_group_a = False  # tracks whether Group A header appeared for current round
 
     for row in ws.iter_rows(values_only=True):
@@ -147,6 +167,10 @@ def _extract_games(ws, fixed_round=None):
             continue
 
         for offset in _GROUP_OFFSETS:
+            header = _team_header(row, offset)
+            if header:
+                teams[offset] = header
+                continue
             if not _is_player_row(row, offset):
                 continue
             name_a  = str(row[offset + 1]).strip()
@@ -155,33 +179,53 @@ def _extract_games(ws, fixed_round=None):
             if not outcome:
                 continue
             board = _table_to_board(row[offset], counters, current_round)
-            games.append((current_round, board, name_a, name_b, outcome))
+            team_a, team_b = teams.get(offset, (None, None))
+            games.append((current_round, board, name_a, name_b, outcome, team_a, team_b))
 
     return games
 
 
 def _load_all_games(year):
     """Parse the Excel file(s) for *year* and return a list of game tuples."""
-    if year == 2024:
-        path = os.path.join(DATA_DIR, 'WOW 2024 data.xlsx')
-        wb   = openpyxl.load_workbook(path, data_only=True)
-        games = _extract_games(wb['All results'], fixed_round=None)
-        wb.close()
-
-    elif year == 2025:
-        path = os.path.join(DATA_DIR, 'WOW 2025 results.xlsx')
-        wb   = openpyxl.load_workbook(path, data_only=True)
-        games = []
-        for round_no in range(1, 7):
-            sheet_name = f'Round {round_no}'
-            if sheet_name in wb.sheetnames:
-                games.extend(_extract_games(wb[sheet_name], fixed_round=round_no))
-        wb.close()
-
-    else:
+    if year not in WOW_EDITIONS:
         raise ValueError(f'No WoW data configured for year {year}')
-
+    filename, layout = WOW_EDITIONS[year]
+    wb = openpyxl.load_workbook(os.path.join(DATA_DIR, filename), data_only=True)
+    if layout == 'single':
+        games = _extract_games(wb['All results'], fixed_round=None)
+    else:
+        games = []
+        round_no = 1
+        while f'Round {round_no}' in wb.sheetnames:
+            games.extend(_extract_games(wb[f'Round {round_no}'], fixed_round=round_no))
+            round_no += 1
+    wb.close()
     return games
+
+
+def _player_keys(games):
+    """Map each (name, team) seen in *games* to (source_key, display_name).
+
+    WoW sheets mostly use first names, so source_key is normally the
+    lower-cased name.  A name that plays twice in the same round belongs to
+    two different people; those names are qualified with their team
+    ("Matt (England)") so they get separate identities.
+    """
+    per_round = {}
+    for round_no, _, name_a, name_b, _, _, _ in games:
+        for name in (name_a, name_b):
+            k = (round_no, name.lower())
+            per_round[k] = per_round.get(k, 0) + 1
+    clashing = {name for (_, name), n in per_round.items() if n > 1}
+
+    keys = {}
+    for _, _, name_a, name_b, _, team_a, team_b in games:
+        for name, team in ((name_a, team_a), (name_b, team_b)):
+            if name.lower() in clashing and team:
+                keys[(name, team)] = (f'{name.lower()} ({team.lower()})', f'{name} ({team})')
+            else:
+                keys[(name, team)] = (name.lower(), name)
+    return keys
 
 
 # ---------------------------------------------------------------------------
@@ -189,12 +233,16 @@ def _load_all_games(year):
 # ---------------------------------------------------------------------------
 
 def import_wow(year: int) -> dict:
-    """Import WoW data for *year* from the Data/ folder.  Returns stats dict."""
+    """Import WoW data for *year* from the Data/ folder.  Returns stats dict.
+
+    Games are replaced for the edition, so corrections in the sheet (or in
+    the parser) don't leave stale games behind.
+    """
     games = _load_all_games(year)
 
     conn = get_db()
     c    = get_cursor(conn)
-    stats = {'editions': 0, 'players': 0, 'games': 0, 'new_competitors': 0}
+    stats = {'editions': 0, 'players': 0, 'games': 0, 'games_before': 0, 'new_competitors': 0}
 
     # Upsert source_edition (synthetic ID = year, since WoW has no authoritative ID).
     edition_name = f'WoW {year}'
@@ -213,59 +261,56 @@ def import_wow(year: int) -> dict:
             ('wow', year, year, edition_name))
         stats['editions'] += 1
 
-    # Build source_competitor map: name → competitor_id.
-    all_names = set()
-    for _, _, name_a, name_b, _ in games:
-        all_names.add(name_a)
-        all_names.add(name_b)
-
-    name_to_comp = {}
-    for name in sorted(all_names):
-        source_key = name.lower()
+    # Build source_competitor map: source_key → (source_competitor_id, competitor_id).
+    player_keys = _player_keys(games)
+    key_to_sc = {}
+    for source_key, name in sorted(set(player_keys.values())):
+        if source_key in key_to_sc:
+            continue
         c.execute(q('SELECT id, competitor_id FROM source_competitor WHERE source=? AND source_key=?'),
                   ('wow', source_key))
         sc_row = c.fetchone()
         if sc_row:
-            name_to_comp[name] = sc_row['competitor_id']
+            key_to_sc[source_key] = (sc_row['id'], sc_row['competitor_id'])
             # Keep display name fresh.
             c.execute(q('UPDATE source_competitor SET name=? WHERE id=?'),
                       (name, sc_row['id']))
         else:
             comp_id = insert_returning_id(
                 c, q('INSERT INTO competitor (display_name) VALUES (?)'), (name,))
-            insert_returning_id(c, q(
+            sc_id = insert_returning_id(c, q(
                 '''INSERT INTO source_competitor
                    (source, source_key, name, competitor_id)
                    VALUES (?, ?, ?, ?)'''),
                 ('wow', source_key, name, comp_id))
-            name_to_comp[name] = comp_id
+            key_to_sc[source_key] = (sc_id, comp_id)
             stats['new_competitors'] += 1
             stats['players'] += 1
 
-    # Upsert games.
-    for round_no, board_number, name_a, name_b, outcome in games:
-        ca = name_to_comp.get(name_a)
-        cb = name_to_comp.get(name_b)
+    # Replace games.
+    c.execute(q('SELECT COUNT(*) as cnt FROM game WHERE source_edition_id=?'), (sed_id,))
+    stats['games_before'] = c.fetchone()['cnt']
+    c.execute(q('DELETE FROM game WHERE source_edition_id=?'), (sed_id,))
+
+    seen = set()
+    for round_no, board_number, name_a, name_b, outcome, team_a, team_b in games:
+        sc_a, ca = key_to_sc[player_keys[(name_a, team_a)][0]]
+        sc_b, cb = key_to_sc[player_keys[(name_b, team_b)][0]]
         if ca is None or cb is None:
             continue
+        key = (round_no, board_number, ca, cb)
+        if key in seen:
+            continue
+        seen.add(key)
 
-        c.execute(q('''SELECT id FROM game
-                       WHERE source_edition_id=? AND round_order=?
-                       AND board_number=? AND competitor_a=? AND competitor_b=?'''),
-                  (sed_id, round_no, board_number, ca, cb))
-        if c.fetchone():
-            c.execute(q('''UPDATE game SET outcome=?
-                           WHERE source_edition_id=? AND round_order=?
-                           AND board_number=? AND competitor_a=? AND competitor_b=?'''),
-                      (outcome, sed_id, round_no, board_number, ca, cb))
-        else:
-            insert_returning_id(c, q(
-                '''INSERT INTO game
-                   (source_edition_id, round_order, board_number,
-                    competitor_a, competitor_b, outcome, dice_kills_a, dice_kills_b)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, 0)'''),
-                (sed_id, round_no, board_number, ca, cb, outcome))
-            stats['games'] += 1
+        c.execute(q(
+            '''INSERT INTO game
+               (source_edition_id, round_order, board_number,
+                competitor_a, competitor_b, sc_a, sc_b,
+                outcome, dice_kills_a, dice_kills_b)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)'''),
+            (sed_id, round_no, board_number, ca, cb, sc_a, sc_b, outcome))
+        stats['games'] += 1
 
     conn.commit()
     conn.close()
@@ -275,5 +320,6 @@ def import_wow(year: int) -> dict:
 if __name__ == '__main__':
     year = int(sys.argv[1]) if len(sys.argv) > 1 else 2024
     print(f'Importing WoW {year} …')
+    init_db()
     result = import_wow(year)
     print(result)

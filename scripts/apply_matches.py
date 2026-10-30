@@ -1,11 +1,16 @@
+"""One-off: auto-link WoW names to WTC competitors.  Run on the VPS:
+  cd /opt/rankings && venv/bin/python scripts/apply_matches.py
+"""
 import os, sys, unicodedata
-os.chdir('/opt/rankings')
-sys.path.insert(0, '/opt/rankings')
-for line in open('/opt/rankings/.env').read().splitlines():
-    if '=' in line:
-        k, v = line.split('=', 1)
-        os.environ.setdefault(k.strip(), v.strip())
-from app import get_db, get_cursor, q
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(ROOT)
+sys.path.insert(0, ROOT)
+if os.path.exists(os.path.join(ROOT, '.env')):
+    for line in open(os.path.join(ROOT, '.env')).read().splitlines():
+        if '=' in line:
+            k, v = line.split('=', 1)
+            os.environ.setdefault(k.strip(), v.strip())
+from db import get_db, get_cursor, q, relink_source_competitor
 
 def norm(s):
     s = (s or '').strip().lower()
@@ -112,12 +117,7 @@ for sc_id, sk, wn, old_cid in wow_rows:
     if old_cid == wtc_cid:
         applied.append((wn, wtc_comp['display_name'], reason, 'already'))
         continue
-    c.execute(q('UPDATE source_competitor SET competitor_id=? WHERE id=?'), (wtc_cid, sc_id))
-    c.execute(q('SELECT COUNT(*) as cnt FROM source_competitor WHERE competitor_id=?'), (old_cid,))
-    if c.fetchone()['cnt'] == 0:
-        c.execute(q('UPDATE game SET competitor_a=? WHERE competitor_a=?'), (wtc_cid, old_cid))
-        c.execute(q('UPDATE game SET competitor_b=? WHERE competitor_b=?'), (wtc_cid, old_cid))
-        c.execute(q('DELETE FROM competitor WHERE id=?'), (old_cid,))
+    relink_source_competitor(c, sc_id, wtc_cid)
     applied.append((wn, wtc_comp['display_name'], reason, 'linked'))
 
 conn.commit(); conn.close()

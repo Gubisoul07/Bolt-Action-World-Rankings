@@ -7,15 +7,19 @@ Called by app.py's /admin/import/wtc route; can also be run standalone:
 import sys
 import requests
 
-from app import get_db, get_cursor, insert_returning_id, q
+from db import get_db, get_cursor, init_db, insert_returning_id, q
 
 
 def import_wtc(data: dict) -> dict:
-    """Upsert one WTC export payload.  Returns stats dict."""
+    """Upsert one WTC export payload.  Returns stats dict.
+
+    Games are replaced per edition, so pairings corrected or removed in WTC
+    disappear here too.
+    """
     conn = get_db()
     c    = get_cursor(conn)
 
-    stats = {'editions': 0, 'players': 0, 'games': 0, 'new_competitors': 0}
+    stats = {'editions': 0, 'players': 0, 'games': 0, 'games_before': 0, 'new_competitors': 0}
 
     for edition in data.get('editions', []):
         eid_src = edition['id']
@@ -42,7 +46,7 @@ def import_wtc(data: dict) -> dict:
 
         # Map source_competitor: source_key = str(person_id) from WTC.
         # Players without a person_id are skipped (not yet deduped in WTC admin).
-        player_map = {}   # WTC player_id → competitor_id (if resolved)
+        player_map = {}   # WTC player_id → (source_competitor_id, competitor_id)
         for p in edition.get('players', []):
             wtc_player_id = p['id']
             person_id     = p.get('person_id')
@@ -57,15 +61,18 @@ def import_wtc(data: dict) -> dict:
             if sc_row:
                 sc_id   = sc_row['id']
                 comp_id = sc_row['competitor_id']
-                # Keep name fresh.
+                # Keep name fresh.  WTC names are canonical display names.
                 c.execute(q('UPDATE source_competitor SET name=? WHERE id=?'),
                           (name_str, sc_id))
+                if comp_id is not None:
+                    c.execute(q('UPDATE competitor SET display_name=? WHERE id=?'),
+                              (name_str, comp_id))
             else:
                 # Auto-create a competitor for new WTC persons.  Cross-source
                 # identity (WTC↔WoW) is resolved later via the admin UI.
                 comp_id = insert_returning_id(
                     c, q('INSERT INTO competitor (display_name) VALUES (?)'), (name_str,))
-                insert_returning_id(c, q(
+                sc_id = insert_returning_id(c, q(
                     '''INSERT INTO source_competitor
                        (source, source_key, name, competitor_id)
                        VALUES (?, ?, ?, ?)'''),
@@ -73,15 +80,24 @@ def import_wtc(data: dict) -> dict:
                 stats['new_competitors'] += 1
                 stats['players'] += 1
 
-            player_map[wtc_player_id] = comp_id
+            if comp_id is not None:
+                player_map[wtc_player_id] = (sc_id, comp_id)
 
-        # Upsert games — only if match_data_available.
-        if not mda:
+        # Replace games — only if match_data_available and the export has
+        # pairings (an empty list must not wipe a previously imported edition).
+        pairings = edition.get('pairings', [])
+        if not mda or not pairings:
             continue
-        for pairing in edition.get('pairings', []):
-            ca = player_map.get(pairing['player_a'])
-            cb = player_map.get(pairing['player_b'])
-            if ca is None or cb is None:
+
+        c.execute(q('SELECT COUNT(*) as cnt FROM game WHERE source_edition_id=?'), (sed_id,))
+        stats['games_before'] += c.fetchone()['cnt']
+        c.execute(q('DELETE FROM game WHERE source_edition_id=?'), (sed_id,))
+
+        seen = set()
+        for pairing in pairings:
+            pa = player_map.get(pairing['player_a'])
+            pb = player_map.get(pairing['player_b'])
+            if pa is None or pb is None:
                 continue   # one side has no person_id yet — skip
 
             outcome      = pairing.get('outcome')    # W/D/L from player_a's view
@@ -92,25 +108,20 @@ def import_wtc(data: dict) -> dict:
 
             if not outcome:
                 continue
+            key = (round_order, board_number, pa[1], pb[1])
+            if key in seen:
+                continue
+            seen.add(key)
 
-            c.execute(q('''SELECT id FROM game
-                           WHERE source_edition_id=? AND round_order=?
-                           AND board_number=? AND competitor_a=? AND competitor_b=?'''),
-                      (sed_id, round_order, board_number, ca, cb))
-            if c.fetchone():
-                c.execute(q('''UPDATE game SET outcome=?, dice_kills_a=?, dice_kills_b=?
-                               WHERE source_edition_id=? AND round_order=?
-                               AND board_number=? AND competitor_a=? AND competitor_b=?'''),
-                          (outcome, dk_a, dk_b,
-                           sed_id, round_order, board_number, ca, cb))
-            else:
-                insert_returning_id(c, q(
-                    '''INSERT INTO game
-                       (source_edition_id, round_order, board_number,
-                        competitor_a, competitor_b, outcome, dice_kills_a, dice_kills_b)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)'''),
-                    (sed_id, round_order, board_number, ca, cb, outcome, dk_a, dk_b))
-                stats['games'] += 1
+            c.execute(q(
+                '''INSERT INTO game
+                   (source_edition_id, round_order, board_number,
+                    competitor_a, competitor_b, sc_a, sc_b,
+                    outcome, dice_kills_a, dice_kills_b)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''),
+                (sed_id, round_order, board_number, pa[1], pb[1], pa[0], pb[0],
+                 outcome, dk_a, dk_b))
+            stats['games'] += 1
 
     conn.commit()
     conn.close()
@@ -121,5 +132,6 @@ if __name__ == '__main__':
     url = sys.argv[1] if len(sys.argv) > 1 else 'https://scoring.hala.dk/api/export.json'
     print(f'Fetching {url} …')
     data = requests.get(url, timeout=15).json()
+    init_db()
     result = import_wtc(data)
     print(result)

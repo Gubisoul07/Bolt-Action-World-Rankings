@@ -25,7 +25,7 @@
     {% endfor %}
   </div>
   {% endif %}
-  <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Apply</button>
+  <button type="submit" class="btn">Apply</button>
 </form>
 
 {% macro rating_table(rows, provisional=false) %}
@@ -60,13 +60,13 @@
 
 {% if qualified %}
   <h2>Qualified ({{ qualified | length }})</h2>
-  <p style="color:#aaa; font-size:0.9rem;">Minimum {{ min_games }} games or {{ min_editions }} rated events.</p>
+  <p class="hint">Minimum {{ min_games }} games or {{ min_editions }} rated events.</p>
   {{ rating_table(qualified) }}
 {% endif %}
 
 {% if provisional %}
   <h2>Provisional ({{ provisional | length }})</h2>
-  <p style="color:#aaa; font-size:0.9rem;">Below the qualification threshold — rankings are unreliable with small samples.</p>
+  <p class="hint">Below the qualification threshold — rankings are unreliable with small samples.</p>
   {{ rating_table(provisional, provisional=true) }}
 {% endif %}
 
@@ -81,7 +81,7 @@
      Rating = 1000 + 1000·(r + SoS_adjustment − 0.5).</p>
   <p><strong>One-deep SoS:</strong> same formula but SoS uses raw rates (single pass).</p>
   <p><strong>Sequential Elo:</strong> games processed in chronological order (year → round),
-     K={{ 32 }}. SoS not shown.</p>
+     K={{ elo_k }}. SoS not shown.</p>
   <p>Only events with full round-by-round pairings are rated.
      Summary-only events appear in the historical record on the home page.</p>
 </details>

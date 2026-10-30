@@ -79,17 +79,22 @@ source_competitor(
     competitor_id       -- the cross-source link
 );
 
+source_edition(
+    source, source_edition_id, year, name,
+    match_data_available  -- 0 = history only, excluded from ratings
+);
+
 game(
     id,
-    source,             -- 'wtc' / 'wow'
-    event_year,
-    round_order,        -- for Elo chronology: (event_year, round_order)
-    competitor_a,
+    source_edition_id,  -- year/source/rated come from the edition
+    round_order,        -- for Elo chronology: (year, round_order)
+    board_number,
+    competitor_a,       -- cached from source_competitor.competitor_id
     competitor_b,
+    sc_a, sc_b,         -- the source_competitor rows that played the game
     outcome,            -- W/D/L from competitor_a's view
     dice_kills_a,       -- optional, for tiebreaks/display
-    dice_kills_b,
-    rated BOOLEAN       -- = old match_data_available
+    dice_kills_b
 );
 ```
 
@@ -191,7 +196,7 @@ The **only** change that lands in the scoring repo. Read-only, public (standings
 | **1** | rankings repo | ✅ Done | Flask skeleton + Postgres schema (`competitor`, `source_competitor`, `source_edition`, `game`). |
 | **2** | rankings repo | ✅ Done | WTC importer (`importer_wtc.py`) — pulls `export.json` → upserts `game` rows, carries WTC `person_id` as `source_key`. |
 | **3** | rankings repo | ✅ Done | Rating engine (3 models) + `/world` page with model toggle + tournament filter. |
-| **4** | rankings repo | ⏳ Blocked on WoW data | WoW importer (`importer_wow.py`) + cross-source identity review. `/admin/unmatched` screen already built. |
+| **4** | rankings repo | ✅ Done | WoW importer (`importer_wow.py`, WoW 2024 + 2025 from Excel) + cross-source identity review (`/admin/wow_players`). |
 | **5** | VPS | ⏳ To do | Deploy to `rankings.hala.dk` (see below). |
 
 Repo: **https://github.com/Gubisoul07/Bolt-Action-World-Rankings**
@@ -317,7 +322,6 @@ After import, use `/admin/unmatched` to link WoW player names to existing WTC co
 
 ## Open items
 
-- **WoW data format** — does Russel have per-round pairings or only final standings?
 - **Subdomain confirmed?** Plan assumes `rankings.hala.dk`.
 
 ---
