@@ -13,30 +13,24 @@
 
 <h2>Import WTC Data</h2>
 <form method="post" action="{{ url_for('admin_import_wtc') }}">
-  <input type="url" name="url" value="https://scoring.hala.dk/api/export.json"
-         style="width:400px; padding:0.4rem; background:#16213e; color:#e0e0e0; border:1px solid #2a2a4a; border-radius:4px;">
-  <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer; margin-left:0.5rem;">
-    Import from WTC
-  </button>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="url" name="url" value="{{ wtc_export_url }}" class="input" style="width:400px;">
+  <button type="submit" class="btn" style="margin-left:0.5rem;">Import from WTC</button>
 </form>
-<p style="color:#aaa; font-size:0.85rem;">Fetches the live export from scoring.hala.dk and upserts all editions.
-   Safe to run multiple times — existing records are updated, not duplicated.</p>
+<p class="hint">Fetches the live export from scoring.hala.dk and upserts all editions.
+   Safe to run multiple times — each edition's games are replaced with the current export.</p>
 
 <h2>Import WoW Data</h2>
 <p>
-  <form method="post" action="{{ url_for('admin_import_wow', year=2024) }}" style="display:inline">
-    <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">
-      Import WoW 2024
-    </button>
+  {% for year in wow_years %}
+  <form method="post" action="{{ url_for('admin_import_wow', year=year) }}" style="display:inline; margin-right:0.5rem;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn">Import WoW {{ year }}</button>
   </form>
-  <form method="post" action="{{ url_for('admin_import_wow', year=2025) }}" style="display:inline; margin-left:0.5rem;">
-    <button type="submit" style="padding:0.4rem 1rem; background:#f0a500; color:#1a1a2e; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">
-      Import WoW 2025
-    </button>
-  </form>
+  {% endfor %}
 </p>
-<p style="color:#aaa; font-size:0.85rem;">Reads Excel files from the Data/ folder. Safe to run multiple times — existing records are updated, not duplicated.
-   After import, use the <a href="{{ url_for('admin_unmatched') }}">Unmatched players</a> screen to link WoW names to global competitors.</p>
+<p class="hint">Reads Excel files from the Data/ folder. Safe to run multiple times — the edition's games are replaced.
+   After import, use the <a href="{{ url_for('admin_wow_players') }}">WoW player links</a> screen to link WoW names to WTC competitors.</p>
 
 <h2>Imported Events</h2>
 {% if editions %}

@@ -1,146 +1,37 @@
+import hmac
 import os
-import sqlite3
-import logging
+import secrets
+from functools import wraps
 
-from flask import Flask, jsonify, render_template, request, redirect, url_for, session, flash
+from flask import (Flask, abort, flash, redirect, render_template, request,
+                   session, url_for)
+
+from db import get_cursor, get_db, init_db, insert_returning_id, q, relink_source_competitor
+from importer_wow import WOW_EDITIONS
+from ratings import ELO_K, MIN_EDITIONS, MIN_GAMES, compute_ratings
+
+
+def require_env(name):
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f'{name} environment variable is required and must be set')
+    return value
+
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY') or (_ for _ in ()).throw(
-    RuntimeError('SECRET_KEY environment variable is required and must be set')
-)
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD') or (_ for _ in ()).throw(
-    RuntimeError('ADMIN_PASSWORD environment variable is required and must be set')
-)
+app.secret_key = require_env('SECRET_KEY')
+app.config.update(SESSION_COOKIE_SAMESITE='Lax')
+ADMIN_PASSWORD = require_env('ADMIN_PASSWORD')
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
-
-# ---------------------------------------------------------------------------
-# DB helpers  (mirrors WTC scoring q/get_db/get_cursor pattern)
-# ---------------------------------------------------------------------------
-
-def q(sql):
-    """Convert ? placeholders to %s for PostgreSQL; leave as-is for SQLite."""
-    if DATABASE_URL:
-        return sql.replace('?', '%s')
-    return sql
-
-
-def get_db():
-    if DATABASE_URL:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = False
-        return conn
-    return sqlite3.connect('rankings.db')
-
-
-def get_cursor(conn):
-    if DATABASE_URL:
-        import psycopg2.extras
-        return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    conn.row_factory = sqlite3.Row
-    return conn.cursor()
-
-
-def insert_returning_id(c, sql, params):
-    if DATABASE_URL:
-        c.execute(sql + ' RETURNING id', params)
-        return c.fetchone()['id']
-    c.execute(sql, params)
-    return c.lastrowid
-
-
-# ---------------------------------------------------------------------------
-# Schema initialisation
-# ---------------------------------------------------------------------------
-
-def _safe_migrate(sql):
-    _conn = get_db()
-    try:
-        _conn.cursor().execute(sql)
-        _conn.commit()
-    except Exception as e:
-        msg = str(e).lower()
-        if 'duplicate column' not in msg and 'already exists' not in msg:
-            logging.getLogger(__name__).error('Migration failed: %s', e)
-            raise
-    finally:
-        _conn.close()
-
-
-def init_db():
-    conn = get_db()
-    c = get_cursor(conn)
-
-    if DATABASE_URL:
-        id_col = 'SERIAL PRIMARY KEY'
-        ts_now = 'TIMESTAMP DEFAULT NOW()'
-    else:
-        id_col = 'INTEGER PRIMARY KEY AUTOINCREMENT'
-        ts_now = 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-
-    # Global identity — one row per real-world person.
-    c.execute(f'''CREATE TABLE IF NOT EXISTS competitor (
-        id          {id_col},
-        display_name TEXT NOT NULL,
-        created_at  {ts_now}
-    )''')
-
-    # Source-specific identity record.  Maps a (source, source_key) pair to a
-    # competitor.  source_key is the WTC person_id (as text) for WTC imports,
-    # or the player name slug for sources without an authoritative ID.
-    c.execute(f'''CREATE TABLE IF NOT EXISTS source_competitor (
-        id            {id_col},
-        source        TEXT NOT NULL,
-        source_key    TEXT NOT NULL,
-        name          TEXT NOT NULL,
-        competitor_id INTEGER,
-        created_at    {ts_now},
-        UNIQUE (source, source_key)
-    )''')
-
-    # One row per imported edition (WTC 2024, WoW 2025, …).
-    # match_data_available = 0 means only aggregate data exists — the edition
-    # is shown for the historical record but excluded from ratings.
-    c.execute(f'''CREATE TABLE IF NOT EXISTS source_edition (
-        id                   {id_col},
-        source               TEXT NOT NULL,
-        source_edition_id    INTEGER NOT NULL,
-        year                 INTEGER NOT NULL,
-        name                 TEXT NOT NULL,
-        match_data_available INTEGER NOT NULL DEFAULT 1,
-        imported_at          {ts_now},
-        UNIQUE (source, source_edition_id)
-    )''')
-
-    # One row per individual board game.  outcome is always from competitor_a's
-    # perspective (W/D/L).  rated is derived from the parent source_edition's
-    # match_data_available at query time — this column caches it for fast reads.
-    c.execute(f'''CREATE TABLE IF NOT EXISTS game (
-        id                {id_col},
-        source_edition_id INTEGER NOT NULL,
-        round_order       INTEGER NOT NULL,
-        board_number      INTEGER,
-        competitor_a      INTEGER NOT NULL,
-        competitor_b      INTEGER NOT NULL,
-        outcome           TEXT NOT NULL,
-        dice_kills_a      INTEGER DEFAULT 0,
-        dice_kills_b      INTEGER DEFAULT 0,
-        UNIQUE (source_edition_id, round_order, board_number, competitor_a, competitor_b)
-    )''')
-
-    conn.commit()
-    conn.close()
-
+WTC_EXPORT_URL = 'https://scoring.hala.dk/api/export.json'
 
 init_db()
 
 # ---------------------------------------------------------------------------
-# Auth helpers
+# Auth / CSRF helpers
 # ---------------------------------------------------------------------------
 
 def require_admin(f):
-    from functools import wraps
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get('logged_in'):
@@ -149,13 +40,31 @@ def require_admin(f):
     return decorated
 
 
+def csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(32)
+    return session['csrf_token']
+
+
+app.jinja_env.globals['csrf_token'] = csrf_token
+
+
+@app.before_request
+def csrf_protect():
+    if request.method == 'POST':
+        token = session.get('csrf_token')
+        if not token or not hmac.compare_digest(token, request.form.get('csrf_token', '')):
+            abort(400, 'Invalid or missing CSRF token — reload the page and try again.')
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        if request.form.get('password') == ADMIN_PASSWORD:
+        password = request.form.get('password', '')
+        if hmac.compare_digest(password.encode(), ADMIN_PASSWORD.encode()):
             session['logged_in'] = True
             return redirect(url_for('index'))
-        flash('Wrong password.')
+        flash('Wrong password.', 'error')
     return render_template('login.html')
 
 
@@ -173,12 +82,20 @@ def logout():
 def index():
     conn = get_db()
     c = get_cursor(conn)
+    # Each game appears twice in the UNION ALL (once per side), hence / 2.
     c.execute('''SELECT se.source, se.year, se.name, se.match_data_available,
-                        COUNT(DISTINCT g.competitor_a) as player_count,
-                        COUNT(g.id) as game_count
+                        COALESCE(p.player_count, 0) as player_count,
+                        COALESCE(p.game_count, 0) as game_count
                  FROM source_edition se
-                 LEFT JOIN game g ON g.source_edition_id = se.id
-                 GROUP BY se.id, se.source, se.year, se.name, se.match_data_available
+                 LEFT JOIN (
+                     SELECT source_edition_id,
+                            COUNT(DISTINCT cid) as player_count,
+                            COUNT(*) / 2 as game_count
+                     FROM (SELECT source_edition_id, competitor_a as cid FROM game
+                           UNION ALL
+                           SELECT source_edition_id, competitor_b FROM game) sides
+                     GROUP BY source_edition_id
+                 ) p ON p.source_edition_id = se.id
                  ORDER BY se.year DESC, se.source''')
     editions = c.fetchall()
     c.execute('SELECT COUNT(*) as cnt FROM competitor')
@@ -217,7 +134,7 @@ def world_rankings():
         conn.close()
         return render_template('world.html', qualified=[], provisional=[],
                                model=model, sources=sources, available_sources=[],
-                               min_games=MIN_GAMES, min_editions=MIN_EDITIONS)
+                               min_games=MIN_GAMES, min_editions=MIN_EDITIONS, elo_k=ELO_K)
 
     rated_ids = list(rated_editions.keys())
     placeholders = ','.join(['?' for _ in rated_ids])
@@ -254,7 +171,7 @@ def world_rankings():
 
     conn.close()
 
-    rows = _compute_ratings(games, competitors, comp_editions, model=model)
+    rows = compute_ratings(games, competitors, comp_editions, model=model)
     qualified   = sorted([r for r in rows if r['qualified']],
                          key=lambda x: (x['rating'], x['point_pct'], x['dice_kills']),
                          reverse=True)
@@ -263,142 +180,11 @@ def world_rankings():
 
     return render_template('world.html', qualified=qualified, provisional=provisional,
                            model=model, sources=sources, available_sources=available_sources,
-                           min_games=MIN_GAMES, min_editions=MIN_EDITIONS)
-
-
-MIN_GAMES    = 12   # ~2 full WTC events
-MIN_EDITIONS = 2
-
-
-def _compute_ratings(games, competitors, comp_editions, *, model='iterative', lam=1.0):
-    """Compute cross-tournament player ratings.
-
-    games       — list of game rows (dicts with competitor_a, competitor_b, outcome,
-                  dice_kills_a/b, source, year, source_edition_id)
-    competitors — {id: display_name}
-    comp_editions — {competitor_id: [{source, year, name}, ...]}
-
-    Returns a list of row dicts ready for the template.
-    Three models:
-      'onedeep'  — SoS = mean(opponents' raw rate).  Current WTC formula.
-      'iterative' — SoS computed from opponents' adjusted rate, iterated to
-                    convergence (~10 passes).  Best for cross-pool connectivity.
-      'elo'      — sequential Elo, ordered by (year, round_order).
-    """
-    # Accumulate per-competitor W/D/L, dice kills, and opponent lists.
-    wdl     = {}   # {comp_id: [w, d, l]}
-    dk      = {}   # {comp_id: dice_kills}
-    opps    = {}   # {comp_id: [opponent_comp_id, ...]}
-    edition_set = {}  # {comp_id: set(source_edition_id)}
-
-    for g in games:
-        a, b = g['competitor_a'], g['competitor_b']
-        for cid in (a, b):
-            wdl.setdefault(cid,  [0, 0, 0])
-            dk.setdefault(cid,   0)
-            opps.setdefault(cid, [])
-            edition_set.setdefault(cid, set())
-        opps[a].append(b)
-        opps[b].append(a)
-        edition_set[a].add(g['source_edition_id'])
-        edition_set[b].add(g['source_edition_id'])
-        dk[a] += g['dice_kills_a'] or 0
-        dk[b] += g['dice_kills_b'] or 0
-        o = g['outcome']   # W/D/L from a's view
-        if o == 'W':
-            wdl[a][0] += 1; wdl[b][2] += 1
-        elif o == 'D':
-            wdl[a][1] += 1; wdl[b][1] += 1
-        else:
-            wdl[a][2] += 1; wdl[b][0] += 1
-
-    # Raw win-equivalent rate r for every competitor seen.
-    rate = {}
-    for cid, (w, d, l) in wdl.items():
-        g = w + d + l
-        rate[cid] = ((w + 0.5 * d) / g) if g else 0.0
-
-    if model == 'elo':
-        return _compute_elo(games, competitors, comp_editions, wdl, dk, edition_set)
-
-    # One-deep SoS (baseline).
-    def _sos(cid, adj_rate):
-        opp_list = opps.get(cid, [])
-        opp_rates = [adj_rate.get(o, 0.5) for o in opp_list]
-        return (sum(opp_rates) / len(opp_rates)) if opp_rates else 0.5
-
-    if model == 'iterative':
-        adj = dict(rate)
-        for _ in range(10):
-            new_adj = {}
-            for cid in rate:
-                sos = _sos(cid, adj)
-                new_adj[cid] = rate[cid] + lam * (sos - 0.5)
-            adj = new_adj
-        perf_rate = adj
-    else:  # onedeep
-        perf_rate = {cid: rate[cid] + lam * (_sos(cid, rate) - 0.5) for cid in rate}
-
-    rows = []
-    for cid in rate:
-        w, d, l = wdl[cid]
-        g = w + d + l
-        sos = _sos(cid, rate)   # always show one-deep SoS in table regardless of model
-        perf = perf_rate[cid]
-        editions_played = comp_editions.get(cid, [])
-        editions_played.sort(key=lambda e: e['year'] or 0, reverse=True)
-        rows.append({
-            'name':        competitors.get(cid, f'#{cid}'),
-            'editions':    editions_played,
-            'played':      g,
-            'wins':        w, 'draws': d, 'losses': l,
-            'win_pct':     round(100 * (w / g), 1) if g else 0.0,
-            'point_pct':   round(100 * rate[cid], 1),
-            'sos':         round(sos, 3),
-            'rating':      round(1000 + 1000 * (perf - 0.5)),
-            'dice_kills':  dk.get(cid, 0),
-            'qualified':   (len(edition_set.get(cid, set())) >= MIN_EDITIONS or g >= MIN_GAMES),
-        })
-    return rows
-
-
-def _compute_elo(games, competitors, comp_editions, wdl, dk, edition_set, K=32):
-    """Sequential Elo, ordered by (year, round_order)."""
-    elo = {}
-    for cid in wdl:
-        elo[cid] = 1000.0
-
-    for g in sorted(games, key=lambda x: (x['year'], x['source_edition_id'], x['round_order'])):
-        a, b = g['competitor_a'], g['competitor_b']
-        ra, rb = elo.get(a, 1000.0), elo.get(b, 1000.0)
-        ea = 1 / (1 + 10 ** ((rb - ra) / 400))
-        o = g['outcome']
-        sa = 1.0 if o == 'W' else (0.5 if o == 'D' else 0.0)
-        elo[a] = ra + K * (sa - ea)
-        elo[b] = rb + K * ((1 - sa) - (1 - ea))
-
-    rows = []
-    for cid, (w, d, l) in wdl.items():
-        g = w + d + l
-        editions_played = comp_editions.get(cid, [])
-        editions_played.sort(key=lambda e: e['year'] or 0, reverse=True)
-        rows.append({
-            'name':        competitors.get(cid, f'#{cid}'),
-            'editions':    editions_played,
-            'played':      g,
-            'wins':        w, 'draws': d, 'losses': l,
-            'win_pct':     round(100 * (w / g), 1) if g else 0.0,
-            'point_pct':   round(100 * ((w + 0.5 * d) / g), 1) if g else 0.0,
-            'sos':         0.0,  # N/A for Elo
-            'rating':      round(elo.get(cid, 1000)),
-            'dice_kills':  dk.get(cid, 0),
-            'qualified':   (len(edition_set.get(cid, set())) >= MIN_EDITIONS or g >= MIN_GAMES),
-        })
-    return rows
+                           min_games=MIN_GAMES, min_editions=MIN_EDITIONS, elo_k=ELO_K)
 
 
 # ---------------------------------------------------------------------------
-# Admin: WTC import
+# Admin: imports
 # ---------------------------------------------------------------------------
 
 @app.route('/admin')
@@ -420,49 +206,53 @@ def admin():
     conn.close()
     return render_template('admin.html', editions=editions,
                            competitor_count=competitor_count,
-                           unmatched_count=unmatched_count)
+                           unmatched_count=unmatched_count,
+                           wtc_export_url=WTC_EXPORT_URL,
+                           wow_years=sorted(WOW_EDITIONS))
+
+
+def _flash_import_stats(label, stats):
+    flash(f"{label} import done — {stats['editions']} new edition(s), "
+          f"{stats['new_competitors']} new competitors, "
+          f"{stats['games']} games imported (previously {stats['games_before']}).")
 
 
 @app.route('/admin/import/wtc', methods=['POST'])
 @require_admin
 def admin_import_wtc():
     import requests as req
-    url = request.form.get('url', 'https://scoring.hala.dk/api/export.json').strip()
+    url = request.form.get('url', WTC_EXPORT_URL).strip()
     try:
         resp = req.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
     except Exception as e:
-        flash(f'Fetch failed: {e}')
+        flash(f'Fetch failed: {e}', 'error')
         return redirect(url_for('admin'))
 
     from importer_wtc import import_wtc
-    stats = import_wtc(data)
-    flash(f"WTC import done — {stats['editions']} edition(s), "
-          f"{stats['players']} players, {stats['games']} games, "
-          f"{stats['new_competitors']} new competitors.")
+    try:
+        stats = import_wtc(data)
+    except Exception as e:
+        flash(f'WTC import failed: {e}', 'error')
+        return redirect(url_for('admin'))
+    _flash_import_stats('WTC', stats)
     return redirect(url_for('admin'))
 
-
-# ---------------------------------------------------------------------------
-# Admin: WoW import
-# ---------------------------------------------------------------------------
 
 @app.route('/admin/import/wow/<int:year>', methods=['POST'])
 @require_admin
 def admin_import_wow(year):
-    if year not in (2024, 2025):
-        flash(f'Unknown WoW year: {year}')
+    if year not in WOW_EDITIONS:
+        flash(f'Unknown WoW year: {year}', 'error')
         return redirect(url_for('admin'))
     from importer_wow import import_wow
     try:
         stats = import_wow(year)
     except Exception as e:
-        flash(f'WoW {year} import failed: {e}')
+        flash(f'WoW {year} import failed: {e}', 'error')
         return redirect(url_for('admin'))
-    flash(f"WoW {year} import done — {stats['editions']} edition(s), "
-          f"{stats['players']} players, {stats['games']} games, "
-          f"{stats['new_competitors']} new competitors.")
+    _flash_import_stats(f'WoW {year}', stats)
     return redirect(url_for('admin'))
 
 
@@ -475,10 +265,10 @@ def admin_import_wow(year):
 def admin_unmatched():
     conn = get_db()
     c = get_cursor(conn)
-    c.execute(q('''SELECT sc.id, sc.source, sc.source_key, sc.name
-                   FROM source_competitor sc
-                   WHERE sc.competitor_id IS NULL
-                   ORDER BY sc.name'''))
+    c.execute('''SELECT sc.id, sc.source, sc.source_key, sc.name
+                 FROM source_competitor sc
+                 WHERE sc.competitor_id IS NULL
+                 ORDER BY sc.name''')
     unmatched = c.fetchall()
     c.execute('SELECT id, display_name FROM competitor ORDER BY display_name')
     all_competitors = c.fetchall()
@@ -492,23 +282,26 @@ def admin_unmatched():
 def admin_wow_players():
     conn = get_db()
     c = get_cursor(conn)
-    # WoW source_competitors whose linked competitor has no WTC source_competitor
-    c.execute(q('''SELECT sc.id, sc.source_key, sc.name, sc.competitor_id, comp.display_name
-                   FROM source_competitor sc
-                   JOIN competitor comp ON comp.id = sc.competitor_id
-                   WHERE sc.source = 'wow'
-                   AND NOT EXISTS (
-                       SELECT 1 FROM source_competitor sc2
-                       WHERE sc2.competitor_id = sc.competitor_id AND sc2.source = 'wtc'
-                   )
-                   ORDER BY sc.name'''))
+    # Unreviewed WoW source_competitors with games, whose linked competitor has
+    # no WTC source_competitor
+    c.execute('''SELECT sc.id, sc.source_key, sc.name, sc.competitor_id, comp.display_name
+                 FROM source_competitor sc
+                 JOIN competitor comp ON comp.id = sc.competitor_id
+                 WHERE sc.source = 'wow'
+                 AND sc.reviewed = 0
+                 AND EXISTS (SELECT 1 FROM game g WHERE g.sc_a = sc.id OR g.sc_b = sc.id)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM source_competitor sc2
+                     WHERE sc2.competitor_id = sc.competitor_id AND sc2.source = 'wtc'
+                 )
+                 ORDER BY sc.name''')
     wow_players = c.fetchall()
     # All competitors for the dropdown, flagging WTC-linked ones
-    c.execute(q('''SELECT c.id, c.display_name,
-                          (SELECT COUNT(*) FROM source_competitor sc
-                           WHERE sc.competitor_id = c.id AND sc.source = 'wtc') as has_wtc
-                   FROM competitor c
-                   ORDER BY c.display_name'''))
+    c.execute('''SELECT c.id, c.display_name,
+                        (SELECT COUNT(*) FROM source_competitor sc
+                         WHERE sc.competitor_id = c.id AND sc.source = 'wtc') as has_wtc
+                 FROM competitor c
+                 ORDER BY c.display_name''')
     all_competitors = c.fetchall()
     conn.close()
     return render_template('admin_wow_players.html',
@@ -518,31 +311,18 @@ def admin_wow_players():
 @app.route('/admin/wow_merge', methods=['POST'])
 @require_admin
 def admin_wow_merge():
-    sc_id      = int(request.form['sc_id'])
-    action     = request.form['action']  # 'link' | 'keep'
+    sc_id  = int(request.form['sc_id'])
+    action = request.form['action']  # 'link' | 'keep'
     conn = get_db()
     c = get_cursor(conn)
-
     if action == 'keep':
+        c.execute(q('UPDATE source_competitor SET reviewed=1 WHERE id=?'), (sc_id,))
         flash('Kept as WoW-only competitor.')
-        conn.close()
-        return redirect(url_for('admin_wow_players'))
-
-    target_comp_id = int(request.form['competitor_id'])
-    c.execute(q('SELECT competitor_id FROM source_competitor WHERE id=?'), (sc_id,))
-    old_cid = c.fetchone()['competitor_id']
-
-    if old_cid != target_comp_id:
-        c.execute(q('UPDATE source_competitor SET competitor_id=? WHERE id=?'), (target_comp_id, sc_id))
-        # If old auto-competitor is now orphaned, retarget its games and delete it
-        c.execute(q('SELECT COUNT(*) as cnt FROM source_competitor WHERE competitor_id=?'), (old_cid,))
-        if c.fetchone()['cnt'] == 0:
-            c.execute(q('UPDATE game SET competitor_a=? WHERE competitor_a=?'), (target_comp_id, old_cid))
-            c.execute(q('UPDATE game SET competitor_b=? WHERE competitor_b=?'), (target_comp_id, old_cid))
-            c.execute(q('DELETE FROM competitor WHERE id=?'), (old_cid,))
-        conn.commit()
+    else:
+        relink_source_competitor(c, sc_id, int(request.form['competitor_id']))
+        flash('Linked.')
+    conn.commit()
     conn.close()
-    flash('Linked.')
     return redirect(url_for('admin_wow_players'))
 
 
@@ -550,17 +330,21 @@ def admin_wow_merge():
 @require_admin
 def admin_link():
     """Link a source_competitor to an existing competitor, or create a new one."""
-    sc_id       = int(request.form['sc_id'])
-    action      = request.form['action']   # 'link' | 'new'
+    sc_id  = int(request.form['sc_id'])
+    action = request.form['action']   # 'link' | 'new'
     conn = get_db()
     c = get_cursor(conn)
     if action == 'link':
         comp_id = int(request.form['competitor_id'])
     else:
         name = request.form['new_name'].strip()
+        if not name:
+            conn.close()
+            flash('Enter a name for the new competitor.', 'error')
+            return redirect(url_for('admin_unmatched'))
         comp_id = insert_returning_id(
             c, q('INSERT INTO competitor (display_name) VALUES (?)'), (name,))
-    c.execute(q('UPDATE source_competitor SET competitor_id=? WHERE id=?'), (comp_id, sc_id))
+    relink_source_competitor(c, sc_id, comp_id)
     conn.commit()
     conn.close()
     return redirect(url_for('admin_unmatched'))
