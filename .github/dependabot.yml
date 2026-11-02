@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      # All minor and patch bumps in one PR a month
+      pip-minor-and-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+      # Security fixes batched together too
+      pip-security:
+        applies-to: security-updates
+        patterns: ["*"]
+    ignore:
+      # Major versions are upgraded by hand in their own PR
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
